@@ -1,0 +1,51 @@
+name: Auto Update Clash Config
+
+on:
+  schedule:
+    # 每隔10分钟运行一次（使用UTC时间，东八区要-8小时）
+    - cron: '*/10 * * * *'
+  workflow_dispatch:  # 允许手动触发
+  push:
+    paths:
+      - '.github/workflows/clash-update.yml'
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  update-clash:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests pytz
+        
+    - name: Update subscription links
+      run: python update_clash.py
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Commit and push if changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add -A
+        timestamp=$(date +'%Y-%m-%d %H:%M:%S')
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "🔄 Auto update: $timestamp (UTC+8)"
+          git push
+        fi
