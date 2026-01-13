@@ -2,235 +2,150 @@ name: Update Clash Config
 
 on:
   schedule:
-    # 每隔10分钟运行一次（北京时间）
     - cron: '*/10 * * * *'
-  workflow_dispatch: # 允许手动触发
+  workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
-  update-config:
+  update:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout repository
+    - name: Checkout
       uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
+    - name: Setup Python
+      uses: actions/setup-python@v4
       with:
         python-version: '3.10'
 
-    - name: 获取并转换链接
-      id: process-links
+    - name: Install dependencies
+      run: pip install requests
+
+    - name: Fetch URLs
+      id: fetch
       run: |
-        # 安装必要的Python包
-        pip install requests
-        
-        # 创建Python脚本获取链接
-        cat > fetch_urls.py << 'EOF'
+        python << 'EOF'
 import requests
 import re
 from datetime import datetime
-import time
+import os
 
-def fetch_links():
-    source_url = "https://raw.githubusercontent.com/cler1818/Note/refs/heads/main/ceshi"
+def main():
+    # 获取源文件
+    url = "https://raw.githubusercontent.com/cler1818/Note/refs/heads/main/ceshi"
+    resp = requests.get(url)
     
-    try:
-        response = requests.get(source_url, timeout=10)
-        response.raise_for_status()
+    if resp.status_code != 200:
+        print(f"Error: {resp.status_code}")
+        exit(1)
+    
+    # 提取URLs
+    urls = []
+    for line in resp.text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(('#', '//', '<!--')):
+            continue
         
-        content = response.text
-        lines = content.split('\n')
-        urls = []
-        
-        for line in lines:
-            line = line.strip()
-            # 跳过空行和注释
-            if not line:
-                continue
-            if line.startswith('#') or line.startswith('//') or line.startswith('<!--'):
-                continue
-            
-            # 提取URL（简单的URL匹配）
-            url_match = re.search(r'(https?://[^\s<>"]+|www\.[^\s<>"]+)', line)
-            if url_match:
-                url = url_match.group(0)
-                if not url.startswith('http'):
-                    url = 'https://' + url
-                urls.append(url)
-        
-        return urls
-        
-    except Exception as e:
-        print(f"Error fetching source: {e}")
-        return None
-
-if __name__ == "__main__":
-    urls = fetch_links()
-    if urls:
-        # 将URL列表转换为字符串，每行一个
-        urls_text = '\n'.join(urls)
-        
-        # 获取当前北京时间（UTC+8）
-        utc_time = datetime.utcnow()
-        # 转换为北京时间（UTC+8）
-        beijing_hour = (utc_time.hour + 8) % 24
-        beijing_time = utc_time.replace(hour=beijing_hour)
-        timestamp = beijing_time.strftime('%Y-%m-%d %H:%M:%S')
-        
-        # 输出到GitHub Actions (旧方法)
-        with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
-            print(f"urls={urls_text}", file=fh)
-            print(f"timestamp={timestamp}", file=fh)
-        
-        print(f"Found {len(urls)} URLs")
-    else:
+        match = re.search(r'https?://[^\s<>"]+', line)
+        if match:
+            urls.append(match.group(0))
+    
+    if not urls:
         print("No URLs found")
         exit(1)
-EOF
-        
-        # 运行Python脚本获取URLs
-        python fetch_urls.py
+    
+    # 准备输出
+    urls_text = '\n'.join(urls)
+    
+    # 北京时间
+    utc_now = datetime.utcnow()
+    beijing_time = utc_now.replace(hour=(utc_now.hour + 8) % 24)
+    timestamp = beijing_time.strftime('%Y-%m-%d %H:%M:%S')
+    
+    # 设置输出
+    with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+        print(f"urls={urls_text}", file=f)
+        print(f"timestamp={timestamp}", file=f)
+    
+    print(f"Found {len(urls)} URLs")
 
-    - name: 通过API转换链接
-      id: convert-links
+if __name__ == "__main__":
+    main()
+EOF
+
+    - name: Convert via API
+      id: convert
       run: |
-        # 确保安装了requests
-        pip install requests
-        
-        cat > convert_links.py << 'EOF'
+        python << 'EOF'
 import requests
 import json
 import os
-import sys
 
-def convert_links(urls_text):
-    api_url = "https://sublink.works/api/"
-    
-    # 构建请求数据
-    data = {
-        "urls": urls_text,
-        "target": "clash"
-    }
-    
-    try:
-        print("正在发送请求到API...")
-        response = requests.post(api_url, json=data, headers={
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }, timeout=30)
-        
-        print(f"API响应状态码: {response.status_code}")
-        
-        if response.status_code == 200:
-            result = response.json()
-            print(f"API响应成功")
-            
-            if "url" in result:
-                # 获取转换后的Clash链接
-                clash_url = result["url"]
-                print(f"获取Clash配置链接: {clash_url}")
-                
-                clash_response = requests.get(clash_url, timeout=30)
-                print(f"Clash配置响应状态码: {clash_response.status_code}")
-                
-                if clash_response.status_code == 200:
-                    return clash_response.text
-                else:
-                    print(f"Error fetching Clash config: {clash_response.status_code}")
-                    return None
+# 从环境变量获取URLs
+urls_text = """${{ steps.fetch.outputs.urls }}"""
+
+# 调用API
+api_url = "https://sublink.works/api/"
+data = {
+    "urls": urls_text,
+    "target": "clash"
+}
+
+try:
+    resp = requests.post(api_url, json=data, timeout=30)
+    if resp.status_code == 200:
+        result = resp.json()
+        if "url" in result:
+            # 获取Clash配置
+            clash_resp = requests.get(result["url"], timeout=30)
+            if clash_resp.status_code == 200:
+                # 保存到文件
+                with open("clash_config.txt", "w") as f:
+                    f.write(clash_resp.text)
+                print("Conversion successful")
             else:
-                print("No URL in API response")
-                return None
+                print(f"Failed to fetch Clash config: {clash_resp.status_code}")
+                exit(1)
         else:
-            print(f"API Error: {response.status_code}")
-            return None
-            
-    except Exception as e:
-        print(f"Exception during conversion: {str(e)}")
-        return None
-
-if __name__ == "__main__":
-    # 从环境变量获取URLs
-    urls_text = os.environ.get('URLS_TEXT', '')
-    
-    if not urls_text:
-        print("No URLs provided")
-        sys.exit(1)
-    
-    print(f"收到URLs文本长度: {len(urls_text)}")
-    
-    clash_config = convert_links(urls_text)
-    if clash_config:
-        print(f"成功获取Clash配置，长度: {len(clash_config)} 字符")
-        # 保存到文件供后续步骤使用
-        with open('clash_config.txt', 'w', encoding='utf-8') as f:
-            f.write(clash_config)
+            print("No URL in response")
+            exit(1)
     else:
-        print("Failed to convert links")
-        sys.exit(1)
+        print(f"API error: {resp.status_code}")
+        exit(1)
+except Exception as e:
+    print(f"Error: {e}")
+    exit(1)
 EOF
-        
-        # 获取上一步的URLs输出
-        echo "URLS_TEXT=${{ steps.process-links.outputs.urls }}" >> $GITHUB_ENV
-        
-        # 调用API转换
-        python convert_links.py
-        
-        # 读取生成的配置
-        if [ -f "clash_config.txt" ]; then
-          CLASH_CONFIG=$(cat clash_config.txt)
-          echo "CLASH_CONFIG<<EOF" >> $GITHUB_ENV
-          echo "$CLASH_CONFIG" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-        fi
 
-    - name: 更新配置文件
-      id: update-config
+    - name: Update config file
       run: |
-        timestamp="${{ steps.process-links.outputs.timestamp }}"
-        clash_config="${{ env.CLASH_CONFIG }}"
+        # 读取Clash配置
+        CLASH_CONFIG=$(cat clash_config.txt)
+        TIMESTAMP="${{ steps.fetch.outputs.timestamp }}"
         
-        if [ -z "$clash_config" ]; then
-          echo "No Clash config to update"
-          exit 1
-        fi
-        
-        echo "Clash配置长度: ${#clash_config} 字符"
-        
-        # 创建更新后的内容
+        # 创建新配置文件
         {
-          echo "# 更新时间: $timestamp"
+          echo "# 更新时间: $TIMESTAMP"
           echo "# 源自网站源: https://raw.githubusercontent.com/cler1818/Note/refs/heads/main/ceshi"
           echo ""
-          echo "$clash_config"
+          echo "$CLASH_CONFIG"
         } > lzhp529.yaml
-        
-        # 显示前几行确认内容
-        echo "更新后的配置文件前20行:"
-        head -n 20 lzhp529.yaml
-        echo "..."
 
-    - name: 配置Git
+    - name: Commit and push
       run: |
-        git config --global user.name "GitHub Actions Bot"
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
-    - name: 提交更新
-      run: |
-        # 检查文件是否有变化
-        if git diff --quiet lzhp529.yaml; then
-          echo "No changes detected"
-          exit 0
-        fi
+        git config user.name "GitHub Actions"
+        git config user.email "actions@github.com"
         
-        # 提交更改
-        timestamp="${{ steps.process-links.outputs.timestamp }}"
         git add lzhp529.yaml
-        git commit -m "🔄 自动更新 Clash 配置 - $timestamp"
         
-        # 推送更改
-        git push
+        if git diff --cached --quiet; then
+          echo "No changes to commit"
+        else
+          TIMESTAMP="${{ steps.fetch.outputs.timestamp }}"
+          git commit -m "🔄 Auto update: $TIMESTAMP"
+          git push
+        fi
