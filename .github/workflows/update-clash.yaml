@@ -1,0 +1,225 @@
+name: Update Clash Configuration
+
+on:
+  schedule:
+    # 每隔10分钟运行一次（北京时间）
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # 允许手动触发
+  push:
+    paths:
+      - '.github/workflows/update-clash.yaml'
+
+permissions:
+  contents: write
+
+jobs:
+  update-clash:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests pyyaml
+
+    - name: Get current Beijing time
+      id: time
+      run: |
+        # 获取北京时间
+        BEIJING_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
+        echo "BEIJING_TIME=${BEIJING_TIME}" >> $GITHUB_OUTPUT
+        
+        # 格式化提交时间
+        COMMIT_TIME=$(TZ='Asia/Shanghai' date '+%H:%M:%S')
+        echo "COMMIT_TIME=${COMMIT_TIME}" >> $GITHUB_OUTPUT
+        
+        # 生成时间戳用于备注
+        TIMESTAMP=$(TZ='Asia/Shanghai' date '+%Y%m%d%H%M%S')
+        echo "TIMESTAMP=${TIMESTAMP}" >> $GITHUB_OUTPUT
+
+    - name: Fetch URLs from source
+      id: fetch-urls
+      run: |
+        python << 'EOF'
+        import requests
+        import re
+        
+        # 源URL
+        source_url = "https://raw.githubusercontent.com/cler1818/Note/refs/heads/main/ceshil"
+        
+        try:
+            response = requests.get(source_url, timeout=30)
+            response.raise_for_status()
+            content = response.text
+            
+            # 提取所有非注释行的URL
+            urls = []
+            for line in content.split('\n'):
+                line = line.strip()
+                # 跳过空行和注释（以#开头的行）
+                if not line or line.startswith('#'):
+                    continue
+                # 检查是否是有效的URL
+                if re.match(r'^https?://', line):
+                    urls.append(line)
+            
+            # 合并URLs，每行一个
+            urls_text = '\n'.join(urls)
+            
+            # 输出到GitHub Actions
+            with open('urls.txt', 'w', encoding='utf-8') as f:
+                f.write(urls_text)
+            
+            print(f"Found {len(urls)} URLs")
+            
+            # 设置输出变量
+            import os
+            os.system(f'echo "URLS_COUNT={len(urls)}" >> $GITHUB_OUTPUT')
+            
+        except Exception as e:
+            print(f"Error fetching URLs: {e}")
+            raise
+
+EOF
+      env:
+        GITHUB_OUTPUT: /tmp/github_output
+
+    - name: Convert URLs to Clash config via API
+      id: convert
+      run: |
+        python << 'EOF'
+        import requests
+        import json
+        import time
+        
+        # 读取提取的URLs
+        with open('urls.txt', 'r', encoding='utf-8') as f:
+            urls_content = f.read()
+        
+        if not urls_content.strip():
+            print("No URLs found, exiting...")
+            exit(0)
+        
+        # API配置
+        api_base = "https://sublink.works/api/"
+        worker_domain = "https://sublink-worker.schnappi6868.workers.dev/"
+        
+        # 准备请求数据
+        payload = {
+            "urls": urls_content,
+            "target": "clash",
+            "config": {
+                "exclude": "",
+                "include": "",
+                "emoji": True,
+                "udp": True,
+                "tfo": False,
+                "append_type": False,
+                "sort": False,
+                "rename": "",
+                "include_remark": "",
+                "exclude_remark": ""
+            }
+        }
+        
+        try:
+            # 调用API转换
+            response = requests.post(
+                api_base + "convert",
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": worker_domain,
+                    "Referer": worker_domain
+                },
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("success"):
+                    clash_config = result.get("data", "")
+                    
+                    # 添加时间备注
+                    beijing_time = "${{ steps.time.outputs.BEIJING_TIME }}"
+                    timestamp = "${{ steps.time.outputs.TIMESTAMP }}"
+                    
+                    # 在配置开头添加备注
+                    remarked_config = f"""# 更新时间: {beijing_time} (北京时间)
+# 源自: https://raw.githubusercontent.com/cler1818/Note/refs/heads/main/ceshil
+
+{clash_config}"""
+                    
+                    # 保存到文件
+                    with open('lzhp529.yaml', 'w', encoding='utf-8') as f:
+                        f.write(remarked_config)
+                    
+                    print("Clash configuration generated successfully")
+                else:
+                    print(f"API error: {result.get('message', 'Unknown error')}")
+                    exit(1)
+            else:
+                print(f"HTTP error: {response.status_code}")
+                print(f"Response: {response.text}")
+                exit(1)
+                
+        except Exception as e:
+            print(f"Error during API conversion: {e}")
+            exit(1)
+EOF
+
+    - name: Check if changes exist
+      id: check-changes
+      run: |
+        git diff --quiet lzhp529.yaml || echo "changes_exist=true" >> $GITHUB_OUTPUT
+        git status
+
+    - name: Commit and push changes
+      if: steps.check-changes.outputs.changes_exist == 'true'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        git add lzhp529.yaml
+        
+        COMMIT_TIME="${{ steps.time.outputs.COMMIT_TIME }}"
+        git commit -m "🔄 自动更新 Clash 配置 ($COMMIT_TIME 北京时间)"
+        
+        # 尝试推送到仓库
+        attempts=0
+        max_attempts=3
+        while [ $attempts -lt $max_attempts ]; do
+          if git push origin HEAD:${{ github.ref_name }}; then
+            echo "Push successful"
+            break
+          else
+            attempts=$((attempts+1))
+            echo "Push failed, attempt $attempts of $max_attempts"
+            if [ $attempts -lt $max_attempts ]; then
+              echo "Waiting 10 seconds before retry..."
+              sleep 10
+              git pull --rebase origin ${{ github.ref_name }}
+            fi
+          fi
+        done
+        
+        if [ $attempts -eq $max_attempts ]; then
+          echo "Failed to push after $max_attempts attempts"
+          exit 1
+        fi
+
+    - name: No changes notification
+      if: steps.check-changes.outputs.changes_exist != 'true'
+      run: |
+        echo "No changes detected in Clash configuration. Skipping commit."
