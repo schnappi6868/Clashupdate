@@ -1,0 +1,33 @@
+name: Update Clash Subscription
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 下载代码
+      uses: actions/checkout@v4
+
+    - name: 安装Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: 安装requests库
+      run: pip install requests
+
+    - name: 运行更新脚本
+      run: python update_clash.py
+
+    - name: 提交更改
+      run: |
+        git config --global user.email "action@github.com"
+        git config --global user.name "GitHub Action"
+        git add 订阅链接.txt lzhp529.yaml
+        git commit -m "🔄 自动更新" || echo "没有变化"
+        git push
