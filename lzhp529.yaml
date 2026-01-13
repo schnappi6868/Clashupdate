@@ -1,0 +1,2 @@
+我已经github新建Clashupdate仓库，并且仓库根目录已经有lzhp529.yaml文件。现在要求每隔10分钟访问https://raw.githubusercontent.com/cler1818/Note/refs/heads/main/ceshi并获取除备注注释外的网址内容，将网址中内容全部提交到https://app.sublink.works/的“输入源”编辑框，然后点击“转换”按钮，将网站生成的Clash 链接覆盖替换成lzhp529.yaml。每次更新都按照东八区北京时间，并且提交信息显示自动更新时间（时分秒）。更新内容第一行备注更新时间，第二行备注源自网站源.
+https://app.sublink.works/这个网站有API，具体链接为https://sublink.works/api/
