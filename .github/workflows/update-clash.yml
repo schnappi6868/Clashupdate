@@ -1,0 +1,230 @@
+name: Update Clash Config
+
+on:
+  schedule:
+    # 每隔10分钟运行一次（北京时间）
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # 允许手动触发
+  push:
+    branches:
+      - main
+
+jobs:
+  update-config:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests beautifulsoup4 lxml pyyaml
+
+    - name: 获取源链接内容
+      id: fetch-source
+      run: |
+        cat > fetch_links.py << 'EOF'
+        import requests
+        import re
+        from datetime import datetime
+        import pytz
+        
+        # 设置时区为东八区（北京时间）
+        beijing_tz = pytz.timezone('Asia/Shanghai')
+        
+        def fetch_links():
+            source_url = "https://raw.githubusercontent.com/cler1818/Note/refs/heads/main/ceshi"
+            response = requests.get(source_url)
+            
+            if response.status_code != 200:
+                print(f"Error fetching source: {response.status_code}")
+                return None
+            
+            content = response.text
+            
+            # 提取除备注注释外的所有网址
+            # 假设注释以#、//、或<!--开头
+            lines = content.split('\n')
+            urls = []
+            
+            for line in lines:
+                line = line.strip()
+                # 跳过空行和注释
+                if not line or line.startswith('#') or line.startswith('//') or line.startswith('<!--'):
+                    continue
+                # 提取URL（简单的URL匹配）
+                url_match = re.search(r'(https?://[^\s<>"]+|www\.[^\s<>"]+)', line)
+                if url_match:
+                    url = url_match.group(0)
+                    if not url.startswith('http'):
+                        url = 'https://' + url
+                    urls.append(url)
+            
+            return urls
+        
+        if __name__ == "__main__":
+            urls = fetch_links()
+            if urls:
+                # 将URL列表转换为字符串，每行一个
+                urls_text = '\n'.join(urls)
+                
+                # 获取当前北京时间
+                now = datetime.now(beijing_tz)
+                timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
+                
+                print(f"::set-output name=urls::{urls_text}")
+                print(f"::set-output name=timestamp::{timestamp}")
+                print(f"Found {len(urls)} URLs")
+            else:
+                print("No URLs found")
+        EOF
+        
+        python fetch_links.py >> output.txt
+        urls=$(python -c "
+        import sys
+        exec(open('fetch_links.py').read())
+        if __name__ == '__main__':
+            urls = fetch_links()
+            if urls:
+                print('\\n'.join(urls))
+        ")
+        timestamp=$(python -c "
+        from datetime import datetime
+        import pytz
+        beijing_tz = pytz.timezone('Asia/Shanghai')
+        now = datetime.now(beijing_tz)
+        print(now.strftime('%Y-%m-%d %H:%M:%S'))
+        ")
+        
+        echo "urls<<EOF" >> $GITHUB_OUTPUT
+        echo "$urls" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        
+        echo "timestamp<<EOF" >> $GITHUB_OUTPUT
+        echo "$timestamp" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+    - name: 通过API转换链接
+      id: convert-links
+      run: |
+        cat > convert_links.py << 'EOF'
+        import requests
+        import json
+        import sys
+        
+        def convert_links(urls_text):
+            api_url = "https://sublink.works/api/"
+            
+            # 构建请求数据
+            data = {
+                "urls": urls_text,
+                "target": "clash"
+            }
+            
+            try:
+                response = requests.post(api_url, json=data, headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0"
+                })
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if "url" in result:
+                        # 获取转换后的Clash链接
+                        clash_url = result["url"]
+                        clash_response = requests.get(clash_url)
+                        
+                        if clash_response.status_code == 200:
+                            return clash_response.text
+                        else:
+                            print(f"Error fetching Clash config: {clash_response.status_code}")
+                            return None
+                    else:
+                        print("No URL in API response")
+                        return None
+                else:
+                    print(f"API Error: {response.status_code}")
+                    print(f"Response: {response.text}")
+                    return None
+                    
+            except Exception as e:
+                print(f"Exception during conversion: {str(e)}")
+                return None
+        
+        if __name__ == "__main__":
+            urls_text = sys.argv[1] if len(sys.argv) > 1 else ""
+            if urls_text:
+                clash_config = convert_links(urls_text)
+                if clash_config:
+                    print(clash_config)
+        EOF
+        
+        # 使用上一步获取的URLs
+        urls="${{ steps.fetch-source.outputs.urls }}"
+        
+        if [ -z "$urls" ]; then
+          echo "No URLs to convert"
+          exit 1
+        fi
+        
+        # 调用API转换
+        clash_config=$(python convert_links.py "$urls")
+        
+        if [ -n "$clash_config" ]; then
+          echo "clash_config<<EOF" >> $GITHUB_OUTPUT
+          echo "$clash_config" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        else
+          echo "Failed to convert links"
+          exit 1
+        fi
+
+    - name: 更新配置文件
+      id: update-config
+      run: |
+        timestamp="${{ steps.fetch-source.outputs.timestamp }}"
+        clash_config="${{ steps.convert-links.outputs.clash_config }}"
+        
+        if [ -z "$clash_config" ]; then
+          echo "No Clash config to update"
+          exit 1
+        fi
+        
+        # 创建更新后的内容
+        cat > lzhp529.yaml << 'EOF'
+        # 更新时间: $timestamp
+        # 源自网站源: https://raw.githubusercontent.com/cler1818/Note/refs/heads/main/ceshi
+        
+        $clash_config
+        EOF
+        
+        # 显示前几行确认内容
+        echo "Updated config first 10 lines:"
+        head -n 10 lzhp529.yaml
+
+    - name: 提交更新
+      run: |
+        # 配置Git
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+        # 检查文件是否有变化
+        if git diff --quiet lzhp529.yaml; then
+          echo "No changes detected"
+          exit 0
+        fi
+        
+        # 提交更改
+        timestamp="${{ steps.fetch-source.outputs.timestamp }}"
+        git add lzhp529.yaml
+        git commit -m "🔄 自动更新 Clash 配置 - $timestamp"
+        git push
