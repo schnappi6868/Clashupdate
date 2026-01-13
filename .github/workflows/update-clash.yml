@@ -2,13 +2,12 @@ name: Update Clash Subscription
 
 on:
   schedule:
-    # 每隔10分钟运行一次（GitHub Actions的最小间隔是5分钟）
     - cron: '*/10 * * * *'
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
   push:
     paths:
-      - 'update_clash.py'  # 脚本更新时也触发
-      - '.github/workflows/update-clash.yml'  # 工作流更新时触发
+      - 'update_clash.py'
+      - '.github/workflows/update-clash.yml'
 
 jobs:
   update:
@@ -18,9 +17,6 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 0
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -29,17 +25,16 @@ jobs:
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
         pip install requests pytz
 
     - name: Run update script
-      run: |
-        chmod +x update_clash.py
-        python update_clash.py
+      run: python update_clash.py
 
     - name: Check for changes
       id: git-check
       run: |
+        git config --global user.email "action@github.com"
+        git config --global user.name "GitHub Action"
         git add 订阅链接.txt lzhp529.yaml
         if git diff --cached --quiet; then
           echo "changes=false" >> $GITHUB_OUTPUT
@@ -50,28 +45,7 @@ jobs:
     - name: Commit and push changes
       if: steps.git-check.outputs.changes == 'true'
       run: |
-        # 配置Git
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        
-        # 获取北京时间
         TZ='Asia/Shanghai'
         COMMIT_TIME=$(date +"%Y-%m-%d %H:%M:%S")
-        
-        # 提交更改
-        git commit -m "🔄 自动更新订阅链接和Clash配置 [$COMMIT_TIME]"
-        
-        # 推送更改
-        git push origin main
-
-    - name: Notify success
-      if: success()
-      run: |
-        echo "✅ Clash订阅更新成功！"
-        echo "更新时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
-
-    - name: Notify failure
-      if: failure()
-      run: |
-        echo "❌ Clash订阅更新失败！"
-        echo "请检查脚本和网络连接"
+        git commit -m "🔄 自动更新 [$COMMIT_TIME]"
+        git push
